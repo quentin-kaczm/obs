@@ -1,0 +1,13 @@
+groups:
+  - name: api_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(demo_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(demo_http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'erreur demo-api > 5%"
