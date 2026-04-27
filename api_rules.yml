@@ -1,0 +1,6 @@
+groups:
+  - name: api
+    interval: 30s
+    rules:
+      - record: job:http_requests:rate5m
+        expr: rate(demo_http_requests_total[5m])
