@@ -1,0 +1,14 @@
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Mimir
+        type: prometheus
+        url: http://mimir.observability.svc:9009/prometheus
+        isDefault: true
+      - name: Loki
+        type: loki
+        url: http://loki.observability.svc:3100
+      - name: Tempo
+        type: tempo
+        url: http://tempo.observability.svc:3100

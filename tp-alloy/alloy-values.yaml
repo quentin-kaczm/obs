@@ -1,0 +1,267 @@
+alloy:
+  mounts:
+    varlog: true
+
+  extraArgs:
+    - --stability.level=experimental
+
+  configMap:
+    content: |
+      otelcol.exporter.debug "default" {
+        verbosity = "detailed"
+      }
+
+      otelcol.processor.batch "default" {
+        output {
+          metrics = [otelcol.processor.attributes.default.input]
+          logs    = [otelcol.processor.attributes.default.input]
+          traces  = [otelcol.processor.attributes.default.input]
+        }
+      }
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo.observability.svc:4317"
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+      otelcol.processor.tail_sampling "default" {
+        decision_wait               = "10s"
+        num_traces                  = 50000
+        expected_new_traces_per_sec = 10
+
+        policy {
+          name = "errors"
+          type = "status_code"
+          status_code {
+            status_codes = ["ERROR"]
+          }
+        }
+        policy {
+          name = "slow"
+          type = "latency"
+          latency {
+            threshold_ms = 500
+          }
+        }
+        policy {
+          name = "sample-healthy"
+          type = "probabilistic"
+          probabilistic {
+            sampling_percentage = 10
+          }
+        }
+
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+
+      otelcol.processor.attributes "default" {
+        action {
+          key    = "deployment.environment"
+          value  = "lab"
+          action = "insert"
+        }
+        output {
+          metrics = [otelcol.processor.attributes.enrich.input]
+          logs    = [otelcol.exporter.debug.default.input]
+          traces  = [otelcol.processor.tail_sampling.default.input]
+        }
+      }
+
+      otelcol.processor.attributes "enrich" {
+        action {
+          key    = "team"
+          value  = "platform"
+          action = "insert"
+        }
+        output {
+          metrics = [otelcol.exporter.prometheus.default.input]
+        }
+      }
+
+      otelcol.exporter.prometheus "default" {
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.remote_write "mimir" {
+        endpoint {
+          url = "http://mimir.observability.svc:9009/api/v1/push"
+        }
+      }
+
+      discovery.kubernetes "node_exporter" {
+        role = "endpoints"
+      }
+
+      discovery.relabel "node_exporter" {
+        targets = discovery.kubernetes.node_exporter.targets
+        rule {
+          source_labels = ["__meta_kubernetes_service_label_app_kubernetes_io_name"]
+          regex         = "prometheus-node-exporter"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__address__"]
+          target_label  = "__address__"
+          regex         = "(.+):\\d+"
+          replacement   = "$1:9100"
+        }
+      }
+
+      prometheus.scrape "node_exporter" {
+        targets    = discovery.relabel.node_exporter.output
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          url       = "http://loki.observability.svc:3100/loki/api/v1/push"
+          tenant_id = "team-demo"
+        }
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "__host__"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app"]
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name"]
+          separator     = "/"
+          target_label  = "__path__"
+          replacement   = "/var/log/pods/*$1*/*/*.log"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.pods.receiver]
+      }
+
+      loki.process "pods" {
+        stage.match {
+          selector = "{app=\"demo\"}"
+          stage.regex {
+            expression = "^(?P<level>INFO|ERROR|WARNING|DEBUG)"
+          }
+          stage.labels {
+            values = {
+              level = "",
+            }
+          }
+        }
+        forward_to = [loki.write.default.receiver]
+      }
+
+      otelcol.processor.k8sattributes "default" {
+        extract {
+          metadata = ["k8s.namespace.name", "k8s.pod.name", "k8s.node.name"]
+        }
+        output {
+          logs = [otelcol.processor.filter.demo.input, otelcol.processor.filter.payments.input]
+        }
+      }
+
+      otelcol.processor.filter "demo" {
+        error_mode = "ignore"
+        logs {
+          log_record = [
+            "not (resource.attributes[\"service.name\"] == \"demo\" or IsMatch(attributes[\"k8s.namespace.name\"], \"default\"))",
+          ]
+        }
+        output {
+          logs = [otelcol.exporter.otlphttp.loki_demo.input]
+        }
+      }
+
+      otelcol.processor.filter "payments" {
+        error_mode = "ignore"
+        logs {
+          log_record = [
+            "not (resource.attributes[\"service.name\"] == \"payments\" or IsMatch(attributes[\"k8s.namespace.name\"], \"payments\"))",
+          ]
+        }
+        output {
+          logs = [otelcol.exporter.otlphttp.loki_payments.input]
+        }
+      }
+
+      otelcol.exporter.otlphttp "loki_demo" {
+        client {
+          endpoint = "http://loki.observability.svc:3100/otlp"
+          headers = {
+            "X-Scope-OrgID" = "team-demo",
+          }
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+      otelcol.exporter.otlphttp "loki_payments" {
+        client {
+          endpoint = "http://loki.observability.svc:3100/otlp"
+          headers = {
+            "X-Scope-OrgID" = "team-payments",
+          }
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          metrics = [otelcol.processor.batch.default.input]
+          logs    = [otelcol.processor.batch.default.input, otelcol.processor.k8sattributes.default.input]
+          traces  = [otelcol.processor.batch.default.input]
+        }
+      }
+
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+  listenAddr: 0.0.0.0
+
+controller:
+  type: daemonset
+

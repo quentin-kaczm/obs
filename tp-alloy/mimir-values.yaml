@@ -1,0 +1,38 @@
+deploymentMode: monolithic-mode
+
+minio:
+  enabled: false
+
+nginx:
+  enabled: false
+
+gateway:
+  enabled: false
+
+rollout_operator:
+  enabled: false
+
+kafka:
+  enabled: false
+
+mimir:
+  structuredConfig:
+    ingest_storage:
+      enabled: false
+    common:
+      storage:
+        backend: filesystem
+        filesystem:
+          dir: /data/mimir
+    blocks_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/mimir/blocks
+    compactor:
+      data_dir: /data/mimir/compactor
+    ingester:
+      ring:
+        replication_factor: 1
+    store_gateway:
+      sharding_ring:
+        replication_factor: 1
